@@ -1,0 +1,248 @@
+---
+title: "LAB 6 WRITE UP"
+author: "Katherine Bayt"
+date: '2022-05-11'
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+library(tidymodels)
+library(ISLR)
+library(tidyverse)
+tidymodels_prefer()
+Wage <- as_tibble(Wage)
+?Wage
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## The Initial Split 
+```{r}
+set.seed(3435)
+Wage_split <- initial_split(Wage, strata = "wage")
+
+Wage_train <- training(Wage_split)
+Wage_test <- testing(Wage_split)
+```
+
+## Polynomial Regression and Step Functions
+
+Polynomial Regression - doing poly espansions on a variable and passing that expansion into a linear regression model. 
+
+step_poly() - allows us to do polynomial expansion of one or more variables. 
+- will take age and replace it with age, age^2, age^3, and age ^4 (degree=4)
+```{r}
+rec_poly <- recipe(wage ~ age, data = Wage_train) %>%
+  step_poly(age, degree = 4)
+```
+
+Create a linear regreesion specification and combine the recipe with it to create a workflow:
+```{r}
+lm_spec <- linear_reg() %>%
+  set_mode("regression") %>%
+  set_engine("lm")
+
+poly_wf <- workflow() %>%
+  add_model(lm_spec) %>%
+  add_recipe(rec_poly)
+```
+
+Fit the object:
+```{r}
+poly_fit <- fit(poly_wf, data = Wage)
+poly_fit
+```
+Pull the coefficients using tidy()
+```{r}
+tidy(poly_fit)
+```
+step_poly() make a linear combination of the vafiables age, age^2,...
+We can see this by using poly() with raw = FALSE
+```{r}
+poly(1:6, degree = 4, raw = FALSE)
+```
+Can get the raw transformation by setting raw = TRUE
+```{r}
+poly(1:6, degree = 4, raw = TRUE)
+```
+Raw = FALSE vs TRUE:
+- recommended o use FALSE because it makes the resulting variables uncorrelated, something we want in a linear regression model 
+
+Get the raw polynomials by setting options = list(raw = TRUE)
+```{r}
+rec_raw_poly <- recipe(wage ~ age, data = Wage) %>%
+  step_poly(age, degree = 4, options = list(raw = TRUE))
+
+raw_poly_wf <- workflow() %>%
+  add_model(lm_spec) %>%
+  add_recipe(rec_raw_poly)
+
+raw_poly_fit <- fit(raw_poly_wf, data = Wage)
+
+tidy(raw_poly_fit)
+```
+
+# VISUALIZE THE POLYNOMIAL FIT ON OUR DATA
+1. create a tibble with different ranges of age
+2. take this tibble and predict with it to get the regression curve 
+3. add confidence intervals via type - conf_int
+```{r}
+age_range <- tibble(age = seq(min(Wage$age), max(Wage$age)))
+
+regression_lines <- bind_cols(
+  augment(poly_fit, new_data = age_range),
+  predict(poly_fit, new_data = age_range, type = "conf_int")
+)
+regression_lines
+```
+Plot this with green = regression curve, and blue = confidence interval 
+```{r}
+Wage %>%
+  ggplot(aes(age, wage)) +
+  geom_point(alpha = 0.2) +
+  geom_line(aes(y = .pred), color = "darkgreen",
+            data = regression_lines) +
+  geom_line(aes(y = .pred_lower), data = regression_lines, 
+            linetype = "dashed", color = "blue") +
+  geom_line(aes(y = .pred_upper), data = regression_lines, 
+            linetype = "dashed", color = "blue")
+```
+Note that when there is lots of data the CI is smaller, and the CI is wider when there is more data. 
+
+Also note that if we expand the domain it was trained on the curves start diverging. 
+```{r}
+wide_age_range <- tibble(age = seq(18, 100))
+
+regression_lines <- bind_cols(
+  augment(poly_fit, new_data = wide_age_range),
+  predict(poly_fit, new_data = wide_age_range, type = "conf_int")
+)
+
+Wage %>%
+  ggplot(aes(age, wage)) +
+  geom_point(alpha = 0.2) +
+  geom_line(aes(y = .pred), color = "darkgreen",
+            data = regression_lines) +
+  geom_line(aes(y = .pred_lower), data = regression_lines, 
+            linetype = "dashed", color = "blue") +
+  geom_line(aes(y = .pred_upper), data = regression_lines, 
+            linetype = "dashed", color = "blue")
+```
+
+# THINKING OF POLYNOMIAL REGRESSION AS A CLASSIFICATION PROBLEM 
+
+GOAL: find whether an individual earns more than $250000 per year 
+
+Add a new factor denoting this response:
+```{r}
+Wage <- Wage %>%
+  mutate(high = factor(wage > 250, 
+                       levels = c(TRUE, FALSE), 
+                       labels = c("High", "Low")))
+```
+
+Have to create a new polynomial expansion recipe because we have a new response variable:
+```{r}
+rec_poly <- recipe(high ~ age, data = Wage) %>%
+  step_poly(age, degree = 4)
+
+lr_spec <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+lr_poly_wf <- workflow() %>%
+  add_model(lr_spec) %>%
+  add_recipe(rec_poly)
+lr_poly_fit <- fit(lr_poly_wf, data = Wage)
+
+predict(lr_poly_fit, new_data = Wage)
+```
+If we want we can get the underlying probability predictions for the 2 classes, and their confidence intervals,  by setting type = prob, and type = conf_int
+```{r}
+predict(lr_poly_fit, new_data = Wage, type = "prob")
+```
+```{r}
+predict(lr_poly_fit, new_data = Wage, type = "conf_int")
+```
+Let use these to visalize the probability curve for the classification model:
+```{r}
+regression_lines <- bind_cols(
+  augment(lr_poly_fit, new_data = age_range, type = "prob"),
+  predict(lr_poly_fit, new_data = age_range, type = "conf_int")
+)
+
+regression_lines %>%
+  ggplot(aes(age)) +
+  ylim(c(0, 0.2)) +
+  geom_line(aes(y = .pred_High), color = "darkgreen") +
+  geom_line(aes(y = .pred_lower_High), color = "blue", linetype = "dashed") +
+  geom_line(aes(y = .pred_upper_High), color = "blue", linetype = "dashed") +
+  geom_jitter(aes(y = (high == "High") / 5), data = Wage, 
+              shape = "|", height = 0, width = 0.2)
+```
+
+# FITTING A MODEL WITH THE STEP FUNCTION
+
+step_discretize() - converts a numeric variable into a factor variable with n ubins 
+- n = num_breaks
+- these breaks will have about the same number of points in them according to the training set data
+```{r}
+rec_discretize <- recipe(high ~ age, data = Wage) %>%
+  step_discretize(age, num_breaks = 4)
+
+discretize_wf <- workflow() %>%
+  add_model(lr_spec) %>%
+  add_recipe(rec_discretize)
+
+discretize_fit <- fit(discretize_wf, data = Wage)
+discretize_fit
+```
+Can also fo mannualy via step_cut() if you already know where the step functions breaks
+```{r}
+rec_cut <- recipe(high ~ age, data = Wage) %>%
+  step_cut(age, breaks = c(30, 50, 70))
+
+cut_wf <- workflow() %>%
+  add_model(lr_spec) %>%
+  add_recipe(rec_cut)
+
+cut_fit <- fit(cut_wf, data = Wage)
+cut_fit
+```
+# SPLINES
+- in order to fit regression splines use step_bs()
+```{r}
+rec_spline <- recipe(wage ~ age, data = Wage) %>%
+  step_bs(age, options = list(knots = 25, 40, 60))
+```
+
+
+Create a workflow and predict:
+```{r}
+spline_wf <- workflow() %>%
+  add_model(lm_spec) %>%
+  add_recipe(rec_spline)
+
+spline_fit <- fit(spline_wf, data = Wage)
+
+predict(spline_fit, new_data = Wage)
+```
+Lets look at the basic spline on top of the data:
+```{r}
+regression_lines <- bind_cols(
+  augment(spline_fit, new_data = age_range),
+  predict(spline_fit, new_data = age_range, type = "conf_int")
+)
+
+Wage %>%
+  ggplot(aes(age, wage)) +
+  geom_point(alpha = 0.2) +
+  geom_line(aes(y = .pred), data = regression_lines, color = "blue") +
+  geom_line(aes(y = .pred_lower), data = regression_lines, 
+            linetype = "dashed", color = "blue") +
+  geom_line(aes(y = .pred_upper), data = regression_lines, 
+            linetype = "dashed", color = "blue")
+```
+
+NOTE: splines take the breaks from above and makes them continuous with each other. 
